@@ -11,6 +11,7 @@
 //rotation matrix
 //
 
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -18,8 +19,10 @@
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 #include <GL/glx.h>
+#include <GL/glu.h>
 #include "fonts.h"
 #include <math.h>
+
 typedef double Flt;
 
 #define rnd() (float)rand() / (float)RAND_MAX
@@ -37,6 +40,12 @@ void check_resize(XEvent *e);
 int check_keys(XEvent *e);
 void physics(void);
 void render(void);
+void show_flag();
+
+GLfloat LightAmbient[]  = {  0.0f, 0.0f, 0.0f, 1.0f };
+GLfloat LightDiffuse[]  = {  1.0f, 1.0f, 1.0f, 1.0f };
+GLfloat LightSpecular[] = {  0.5f, 0.5f, 0.5f, 1.0f };
+GLfloat LightPosition[] = { 100.0f, 1500.0f, -2000.0f, 1.0f };
 
 
 struct Point {
@@ -59,17 +68,19 @@ public:
 	int wind;
 	int rows;
 	int cols;
+	int flagIdx;
 	Flt ylen;
 	Flt xlen;
 	Flt xstart;
 	Flt ystart;
+	char *currentFlag;
+	char *nextFlag;
 	
 
 	Global() {
 		srand((unsigned)time(NULL));
 		xres = 800;
 		yres = 600;
-		mode = 0;
 		npoints = 5;
 		center.x = xres/2;
 		center.y = yres/2;
@@ -82,6 +93,8 @@ public:
 		ylen = 15.0;
 		xstart = (xres/2)-250;
 		ystart = (yres/2)+270;
+		flagIdx = 0;
+		mode = 1;
 	}
 } g;
 
@@ -89,12 +102,18 @@ class Image{
 public:
 	int width, height;
 	unsigned char *data;
-	GLuint texId;
+	GLuint texId1;
+	GLuint texId2;
 	
 
-	~Image(){ delete [] data; }
-	Image(){
-		system("convert flag.jpg flag.ppm");
+	void loadImage(char filePath[80]){
+		char str[80];
+		strcpy(str, "convert ");
+		strcat(str, filePath);
+		strcat(str, " flag.ppm");
+		puts(str);
+		
+		system(str);
 		FILE *fpi = fopen("flag.ppm","r");
 		if(fpi){
 			char line[200];
@@ -119,7 +138,14 @@ public:
 		}
 
 		unlink("flag.ppm");
+		
 	}
+	~Image(){ delete [] data; }
+	Image(){
+		this->loadImage("flags/american-flag-large.jpg");
+	}
+
+	
 }img;
 
 //mass-struct
@@ -249,19 +275,29 @@ void init_opengl()
 	//glClear(GL_COLOR_BUFFER_BIT);
 	//Do this to allow fonts
 	glEnable(GL_TEXTURE_2D);
+	glEnable(GL_BLEND);
 	initialize_fonts();
 
-
-   //texture mapping functionality
-   glGenTextures(1, &img.texId);
-   int w = img.width;
-   int h = img.height;
-   glBindTexture(GL_TEXTURE_2D, img.texId);
-   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
-   glTexImage2D(GL_TEXTURE_2D,0,3,w,h,0,GL_RGB,GL_UNSIGNED_BYTE,img.data);
-
-	glClear(GL_COLOR_BUFFER_BIT);
+	// lighting========================================
+	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	glClearDepth(1.0);
+	glDepthFunc(GL_LESS);
+	glEnable(GL_DEPTH_TEST);
+	glShadeModel(GL_SMOOTH);
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	gluPerspective(10.0f,0.0f,0.1f,1000.0f);
+	glMatrixMode(GL_MODELVIEW);
+	//Enable this so material colors are the same as vert colors.
+	glEnable(GL_COLOR_MATERIAL);
+	glEnable( GL_LIGHTING );
+	glLightfv(GL_LIGHT0, GL_AMBIENT, LightAmbient);
+	glLightfv(GL_LIGHT0, GL_DIFFUSE, LightDiffuse);
+	glLightfv(GL_LIGHT0, GL_SPECULAR, LightSpecular);
+	glLightfv(GL_LIGHT0, GL_POSITION,LightPosition);
+	glEnable(GL_LIGHT0);
+	// ================================================
+	show_flag();
 }
 
 
@@ -295,7 +331,7 @@ void setup_springs(){
 
 
 	xlen = 12.0;
-	
+
 	ylen = g.ylen;
 	//initialize masses in rows & columns
 	int rowSize = g.rows;
@@ -333,12 +369,11 @@ void setup_springs(){
 		for(int j = i; j < (i+colSize); j++){
 
 			//horizontal springs
-			stiffness = rnd() * 0.2 + 0.1;		
+			stiffness = rnd() * 0.2 + 0.1;
 			if(j < (i+colSize-1))
 				construct_spring(j, j+1, 0, stiffness);
-			
 			if(j < (i+colSize-2))
-				construct_spring(j, j+2, 0, stiffness);				
+				construct_spring(j, j+2, 0, stiffness);
 		
 
 			//vertical springs
@@ -371,6 +406,7 @@ Flt get_wind(Mass &mass1, Mass &mass2){
 	v.pos[0] /= len;
 	v.pos[1] /= len;
 
+	
 	Flt dot = v.pos[0]*mass2.pos[0];
 
 	Flt wind = 0.0000015;
@@ -378,7 +414,7 @@ Flt get_wind(Mass &mass1, Mass &mass2){
 	bool range60 = dot < 330 && dot > 270;
 	bool range90 = dot < 330;
 
-	
+
 	if(range30)
 		wind = 0.00014;
 	else if(range60)
@@ -386,11 +422,11 @@ Flt get_wind(Mass &mass1, Mass &mass2){
 	else if(range90)
 		wind = 0.00021;
 	else
-		wind = 0.000012;	
+		wind = 0.000012;
 
 	// return wind force in x direction
 	return wind*dot;
-	
+
 }
 
 void maintain_springs(){
@@ -502,9 +538,9 @@ void myBresenhamLine(int x0, int y0, int x1, int y1)
     glColor3ub(80, 255, 255);
 	for	(x=x0; x<=x1; x++) {
 		if (steep)
-			glVertex2f((float)y, (float)x);
+			glVertex3f((float)y, (float)x, 0.0f);
 		else
-			glVertex2f((float)x, (float)y);
+			glVertex3f((float)x, (float)y, 0.0f);
 
 		err -= yDiff;
 		if (err <= 0) {
@@ -516,6 +552,62 @@ void myBresenhamLine(int x0, int y0, int x1, int y1)
 	glEnd();
 }
 
+void change_flag(){
+	glEnable(GL_TEXTURE_2D);
+	if(g.flagIdx > 49){g.flagIdx = 0;}
+	char* flags[] = {
+		"flags/american-flag-large.jpg","flags/alabama-flag-large.jpg",
+		"flags/alaska-flag-large.jpg","flags/arizona-flag-large.jpg",
+		"flags/arkansas-flag-large.jpg","flags/california-flag-large.jpg",
+		"flags/colorado-flag-large.jpg","flags/connecticut-flag-large.jpg",
+		"flags/delaware-flag-large.jpg","flags/florida-flag-large.jpg",
+		"flags/georgia-flag-large.jpg","flags/hawaii-flag-large.jpg",
+		"flags/idaho-flag-large.jpg","flags/illinois-flag-large.jpg",
+		"flags/indiana-flag-large.jpg","flags/kansas-flag-large.jpg",
+		"flags/kentucky-flag-large.jpg","flags/louisiana-flag-large.jpg",
+		"flags/maine-flag-large.jpg","flags/maryland-flag-large.jpg",
+		"flags/massachusetts-flag-large.jpg","flags/michigan-flag-large.jpg",
+		"flags/minnesota-flag-large.jpg","flags/mississippi-flag-large.jpg",
+		"flags/missouri-flag-large.jpg","flags/montana-flag-large.jpg",
+		"flags/nebraska-flag-large.jpg","flags/nevada-flag-large.jpg",
+		"flags/new-jersey-flag-large.jpg","flags/new-mexico-flag-large.jpg",
+		"flags/new-york-flag-large.jpg","flags/north-carolina-flag-large.jpg",
+		"flags/north-dakota-flag-large.jpg","flags/ohio-flag-large.jpg",
+		"flags/oklahoma-flag-large.jpg","flags/oregon-flag-large.jpg",
+		"flags/pennsylvania-flag-large.jpg","flags/rhode-island-flag-large.jpg",
+		"flags/south-carolina-flag-large.jpg","flags/south-dakota-flag-large.jpg",
+		"flags/tennessee-flag-large.jpg","flags/texas-flag-large.jpg",
+		"flags/utah-flag-large.jpg","flags/vermont-flag-large.jpg",
+		"flags/virginia-flag-large.jpg","flags/washington-dc-flag-large.jpg",
+		"flags/washington-flag-large.jpg","flags/west-virginia-flag-large.jpg",
+		"flags/wisconsin-flag-large.jpg","flags/wyoming-flag-large.jpg"		
+	};
+
+	//used for text on screen only
+	g.currentFlag = flags[g.flagIdx];
+
+	img.loadImage(flags[g.flagIdx]);
+	g.flagIdx++;
+	
+   //texture mapping functionality
+	glGenTextures(1, &img.texId1);
+	
+
+	int w = img.width;
+	int h = img.height;
+	glBindTexture(GL_TEXTURE_2D, img.texId1);
+	
+
+	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+	glTexImage2D(GL_TEXTURE_2D,0,3,w,h,0,GL_RGB,GL_UNSIGNED_BYTE,img.data);
+	
+
+
+
+	glClear(GL_COLOR_BUFFER_BIT);
+}
+
 int check_keys(XEvent *e){
 	//Was there input from the keyboard?
 	if (e->type == KeyPress) {
@@ -523,6 +615,15 @@ int check_keys(XEvent *e){
 		switch (key) {
 			case XK_r:
 				setup_springs();
+				break;
+			case XK_f:
+				change_flag();
+				break;
+			case XK_1:
+				g.mode = 1;
+				break;
+			case XK_2:
+				g.mode = 2;
 				break;
 			case XK_Escape:
 				return 1;
@@ -532,8 +633,7 @@ int check_keys(XEvent *e){
 	return 0;
 }
 
-void physics()
-{
+void physics(){
 	int i;
 	//gravity...
 	if (g.gravity) {
@@ -546,33 +646,32 @@ void physics()
 
 }
 
-void showMenu()
-{
+void showMenu(){
 	Rect r;
 	r.bot = g.yres - 20;
 	r.left = 15;
 	r.center = 0;
 	unsigned int color = 0x00ffff00;
-	ggprint8b(&r, 16, color, "R - Show Flag");
+	ggprint8b(&r, 16, color, "R - Reset Flag");
+	r.bot = g.yres - 590;
+	ggprint8b(&r, 16, color, g.currentFlag);
 }
 
 
-void show_anchor(int x, int y, int size)
-{
+void show_anchor(int x, int y, int size){
 	//draw a small rectangle...
 	int i,j;
 	glBegin(GL_POINTS);
     glColor3ub(80, 255, 255);
 	for (i=-size; i<=size; i++) {
 		for (j=-size; j<=size; j++) {
-			glVertex2f((float)x+j, (float)y+i);
+			glVertex3f((float)x+j, (float)y+i, 0.0f);
 		}
 	}
 	glEnd();
 }
 
-void show_lines()
-{
+void show_lines(){
 	//draw the lines using Bresenham's algorithm
 	glBegin(GL_POINTS);
     glColor3ub(80, 255, 255);
@@ -581,7 +680,7 @@ void show_lines()
 			(int)mass[spring[i].mass[0]].pos[0],
 			(int)mass[spring[i].mass[0]].pos[1],
 			(int)mass[spring[i].mass[1]].pos[0],
-			(int)mass[spring[i].mass[1]].pos[1]);			
+			(int)mass[spring[i].mass[1]].pos[1]);
 	}
 	for (int i=0; i<nmasses; i++) {
 		show_anchor((int)mass[i].pos[0], (int)mass[i].pos[1],
@@ -590,53 +689,112 @@ void show_lines()
 	glEnd();
 
 }
+typedef Flt Vec[3];
 
+Flt vecDotProduct(Vec v0, Vec v1)
+{
+	return v0[0]*v1[0] + v0[1]*v1[1] + v0[2]*v1[2];
+}
+
+void vecMake(Flt a, Flt b, Flt c, Vec v)
+{
+	v[0] = a;
+	v[1] = b;
+	v[2] = c;
+}
+
+Flt vecLength(Vec v)
+{
+	return sqrt(vecDotProduct(v, v));
+}
+
+void vecNormalize(Vec v)
+{
+	Flt len = vecLength(v);
+	if (len == 0.0) {
+		vecMake(0,0,1,v);
+		return;
+	}
+	len = 1.0 / len;
+	v[0] *= len;
+	v[1] *= len;
+	v[2] *= len;
+}
 
 void show_flag(){
+	glBindTexture(GL_TEXTURE_2D, img.texId1);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	glLightfv(GL_LIGHT0, GL_POSITION, LightPosition);
+	glColor3f(1.0f, 1.0f, 1.0f);
+	Vec v;
 
-	glColor3ub(255, 255, 255);
-	glBindTexture(GL_TEXTURE_2D, img.texId);	
 
 	float stepx = 0.0f;
 	float stepy = 0.0f;
 	for(int i = 0; i < g.rows*g.cols-g.cols; i+=g.cols){
-		
+
 		glBegin(GL_TRIANGLE_STRIP);
+		glLoadIdentity();
+
 		for(int j = 0; j < (g.cols-1); j++){
-			glTexCoord2f(stepx, stepy);		
-			glVertex2f(mass[j+i].pos[0], mass[j+i].pos[1]);
 
-			glTexCoord2f(stepx, stepy+0.04f);	
-			glVertex2f(mass[j+i+g.cols].pos[0], mass[j+i+g.cols].pos[1]);
+			glTexCoord3f(stepx, stepy, 0.0f);
+			v[0] = mass[j+i].pos[0];
+			v[1] =  mass[j+i].pos[1];
+			v[2] = 1.0f;
+			vecNormalize(v);
+			glNormal3f( v[0], v[1], v[2]);
+			glVertex3f(mass[j+i].pos[0], mass[j+i].pos[1], 0.0f);
 
-			glTexCoord2f(stepx+0.02f, stepy);	
-			glVertex2f(mass[j+i+1].pos[0], mass[j+i+1].pos[1]);
 
-			glTexCoord2f(stepx+0.02f, stepy+0.04f);			
-			glVertex2f(mass[j+i+g.cols+1].pos[0], mass[j+i+g.cols+1].pos[1]);
+			glTexCoord3f(stepx, stepy+0.04f, 0.0f);
+			// v[0] = mass[j+i+g.cols].pos[0];
+			// v[1] =  mass[j+i+g.cols].pos[1];
+			// v[2] = 1.0f;
+			// glNormal3f( v[0], v[1], v[2]);
+			glVertex3f(mass[j+i+g.cols].pos[0], mass[j+i+g.cols].pos[1], 0.0f);
+
+
+			glTexCoord3f(stepx+0.02f, stepy, 0.0f);
+			// v[0] = mass[j+i+1].pos[0];
+			// v[1] =  mass[j+i+1].pos[1];
+			// v[2] = 1.0f;
+			// glNormal3f( v[0], v[1], v[2]);
+			glVertex3f(mass[j+i+1].pos[0], mass[j+i+1].pos[1], 0.0f);
+
+
+			glTexCoord3f(stepx+0.02f, stepy+0.04f, 0.0f);
+			// v[0] = mass[j+i+g.cols+1].pos[0];
+			// v[1] =  mass[j+i+g.cols+1].pos[1];
+			// v[2] = -1.0f;
+			// glNormal3f( v[0], v[1], v[2]);
+			glVertex3f(mass[j+i+g.cols+1].pos[0], mass[j+i+g.cols+1].pos[1], 0.0f);
+
 			stepx += 0.02f;
-			
+
 		}
+
 		stepx = 0.0f;
 		stepy += 0.04f;
-		
-		
 		glEnd();
-		
+
 	}
 
 }
 
 
-void render()
-{
-	glClear(GL_COLOR_BUFFER_BIT);
+void render(){
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	showMenu();
-	// show_lines();
-	show_flag();
 
 
 	switch (g.mode) {
+		case 1:
+			show_flag();
+			break;
+		case 2:
+			show_lines();
+			break;
 
 	}
 }
